@@ -1,0 +1,47 @@
+# Hermes metrics exporter sidecar. Deployed alongside the hermes Coolify app.
+#
+# Shares the hermes ~/.hermes volume READ-ONLY so it can inspect kanban.db
+# without ever writing. Joins the coolify network so Prometheus (on the same
+# host) can scrape :9091 by container DNS name.
+#
+# The hermes app's home is a host BIND mount at /opt/hermes/data/hermes on the
+# server (verified 2026-07-24 via `docker inspect hermes`). We re-bind that same
+# host path read-only into the sidecar, so both containers see the same kanban.db
+# file. If the host path changes (different server / re-deploy of hermes), update
+# the source side of the bind mount below.
+#
+# Limits: see RESOURCE_LIMITS.md (0.05 CPU / 48 MiB).
+name: hermes-metrics
+
+networks:
+  coolify:
+    external: true
+
+services:
+  hermes-metrics-exporter:
+    build: .
+    image: ds6c/hermes-metrics-exporter:latest
+    container_name: ds6c-hermes-metrics-exporter
+    restart: unless-stopped
+    networks:
+      - coolify
+    environment:
+      # HERMES_HOME inside the sidecar matches the path hermes uses in its
+      # container so the default $HERMES_HOME/kanban.db resolves correctly.
+      - HERMES_HOME=/root/.hermes
+      - HERMES_MAX_AGENTS=${HERMES_MAX_AGENTS:-7}
+      - LISTEN_ADDR=0.0.0.0:9091
+    volumes:
+      # READ-ONLY bind of the hermes home host path. The kanban.db file lives
+      # here. Confirmed via `docker inspect hermes` — host path is
+      # /opt/hermes/data/hermes -> container /root/.hermes.
+      - /opt/hermes/data/hermes:/root/.hermes:ro
+    ports:
+      # Prometheus scrapes via the coolify network by container name; the host
+      # port binding is kept on loopback for ad-hoc `curl localhost:9091` checks.
+      - "127.0.0.1:9091:9091"
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+          cpus: '0.05'

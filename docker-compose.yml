@@ -1,0 +1,22 @@
+# Hermes Agent — dev-loop orchestrator + ZCode executor + serve API
+# Deployed via Coolify. The coolify network is external so other apps can reach it.
+networks:
+  coolify:
+    external: true
+
+services:
+  hermes:
+    build: .
+    networks:
+      - coolify
+    expose:
+      - "9119"
+    environment:
+      ZCODE_API_KEY: "${ZCODE_API_KEY}"
+      BRAIN_URL: "${BRAIN_URL}"
+      BRAIN_BEARER_TOKEN: "${BRAIN_BEARER_TOKEN}"
+    volumes:
+      - ./data/hermes:/root/.hermes
+      - ./data/zcode:/root/.zcode
+      - ./data/repos:/repos
+    restart: unless-stopped
