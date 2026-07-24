@@ -11,6 +11,13 @@ services:
       - coolify
     expose:
       - "9119"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hermes.rule=Host(`hermes.appdeed.com`)"
+      - "traefik.http.routers.hermes.entryPoints=http,https"
+      - "traefik.http.routers.hermes.tls=true"
+      - "traefik.http.routers.hermes.tls.certresolver=letsencrypt"
+      - "traefik.http.services.hermes.loadbalancer.server.port=9119"
     environment:
       ZCODE_API_KEY: "${ZCODE_API_KEY}"
       BRAIN_URL: "${BRAIN_URL}"
