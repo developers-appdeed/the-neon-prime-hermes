@@ -87,13 +87,16 @@ print('[entrypoint] hermes config.yaml created (model=glm-5.2 + dashboard auth)'
 fi
 
 # ─── 3. Hermes API keys in .env ───────────────────────────────────────────────
+# Hermes routes glm-* models through its native Z.AI provider, which needs
+# GLM_API_KEY (not ANTHROPIC_API_KEY). We set all the recognized env var names.
 ENV_FILE="/root/.hermes/.env"
 touch "$ENV_FILE"
-if ! grep -q "ANTHROPIC_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+if ! grep -q "GLM_API_KEY=" "$ENV_FILE" 2>/dev/null; then
   if [ -n "$ZCODE_API_KEY" ]; then
-    echo "ANTHROPIC_API_KEY=$ZCODE_API_KEY" >> "$ENV_FILE"
-    echo "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" >> "$ENV_FILE"
-    echo "[entrypoint] hermes API keys written to .env"
+    echo "GLM_API_KEY=$ZCODE_API_KEY" >> "$ENV_FILE"
+    echo "ZAI_API_KEY=$ZCODE_API_KEY" >> "$ENV_FILE"
+    echo "Z_AI_API_KEY=$ZCODE_API_KEY" >> "$ENV_FILE"
+    echo "[entrypoint] hermes GLM/ZAI API keys written to .env"
   fi
 fi
 
