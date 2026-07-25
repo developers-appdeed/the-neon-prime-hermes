@@ -13,7 +13,7 @@ if [ -n "$ZCODE_KEY" ]; then
   python3 -c "
 import json, os
 config = {
-    'model': 'builtin:zai-coding-plan/GLM-5.2',
+    'model': 'builtin:zai-coding-plan/glm-5.2',
     'provider': {
         'builtin:zai-coding-plan': {
             'name': 'Z.ai - Coding Plan',
@@ -26,7 +26,7 @@ config = {
             'enabled': True,
             'source': 'custom',
             'models': {
-                'GLM-5.2': {
+                'glm-5.2': {
                     'limit': {'context': 1000000},
                     'modalities': {'input': ['text'], 'output': ['text']}
                 }
@@ -61,7 +61,7 @@ from plugins.dashboard_auth.basic import hash_password
 import yaml, os
 
 config = {
-    'model': 'GLM-5.2',
+    'model': 'glm-5.2',
     'dashboard': {
         'basic_auth': {
             'username': 'ops',
@@ -82,7 +82,7 @@ except:
 
 with open('$HERMES_CFG', 'w') as f:
     yaml.dump(config, f)
-print('[entrypoint] hermes config.yaml created (model=GLM-5.2 + dashboard auth)')
+print('[entrypoint] hermes config.yaml created (model=glm-5.2 + dashboard auth)')
 "
 fi
 
