@@ -111,9 +111,11 @@ if [ ! -f "/root/.hermes/state.db" ]; then
   hermes setup --non-interactive 2>/dev/null || true
 fi
 
-# ─── 6. Start hermes serve (HTTP API for fastify) ─────────────────────────────
-hermes serve --host 0.0.0.0 --port 9119 --insecure --skip-build &
-echo "[entrypoint] hermes serve started on 0.0.0.0:9119"
+# ─── 6. Start hermes dashboard (web UI on 9119) ───────────────────────────────
+# hermes dashboard serves the web UI that hermes.appdeed.com routes to.
+# It also starts the backend API (JSON-RPC/WebSocket) internally.
+hermes dashboard --host 0.0.0.0 --port 9119 --insecure --skip-build --no-open &
+echo "[entrypoint] hermes dashboard started on 0.0.0.0:9119"
 
 # ─── 7. Start the gateway (foreground — the dispatcher loop) ──────────────────
 exec hermes gateway run
