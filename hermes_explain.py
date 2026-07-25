@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
@@ -21,6 +23,20 @@ from pydantic import BaseModel, Field
 from run_agent import AIAgent  # noqa: E402
 
 _LAYER_RE = re.compile(r"<<layer:(business_logic|architecture|database|micro)>>")
+
+# Spec §8: "Agent exceeds 90s wall clock → enqueue event: error, close the
+# stream cleanly." A stuck LLM call would otherwise hold the SSE connection
+# open indefinitely (the 20s heartbeat keeps the client quiet but does nothing
+# to bound the agent run itself). Tests override this to keep the suite fast.
+_AGENT_TIMEOUT_S = 90
+
+# Defense-in-depth turn cap. AIAgent defaults max_iterations=90, which a
+# tool-happy run could blow through well past the wall clock. 40 is generous
+# for a single code-explanation turn (the code-explainer skill never chains
+# tools) and bounds runaway spend alongside the wall clock. The wall clock
+# remains the authoritative bound; this just prevents a tight LLM-tool loop
+# from racing the timer.
+_AGENT_MAX_ITERATIONS = 40
 
 # Repo-relative skill path. Works in the git checkout (where this file sits at
 # the repo root next to skills/). In production the entrypoint copies this
@@ -157,6 +173,9 @@ def _build_agent(question: str, repo: str, enqueue):
         fallback_model=_fb or None,
         clarify_callback=_oneshot_clarify_callback,
         stream_delta_callback=enqueue,
+        # Defense-in-depth turn cap alongside the §8 wall-clock timeout.
+        # See _AGENT_MAX_ITERATIONS comment for rationale.
+        max_iterations=_AGENT_MAX_ITERATIONS,
     )
     agent.suppress_status_output = True
     agent.tool_gen_callback = None
@@ -185,7 +204,48 @@ async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
                     enqueue(d)
             else:
                 agent, prompt = _build_agent(req.question, req.repo, enqueue)
-                agent.run_conversation(prompt)
+                # Spec §8: bound the agent run at the wall clock. AIAgent's
+                # run_conversation is blocking and has no timeout argument,
+                # so we arm a daemon Timer that fires agent.interrupt() —
+                # which breaks the conversation loop out cleanly (sets
+                # _interrupt_requested; the loop checks it between turns and
+                # the in-flight API call's InterruptedError is swallowed by
+                # the loop's own handler). run_conversation then returns
+                # normally. We enqueue the error frame from the timer so the
+                # SSE stream closes cleanly even if the interrupt takes a
+                # moment to land. The done-sentinel is skipped when the
+                # timer fired (the error frame is terminal).
+                timed_out = {"flag": False}
+
+                def on_timeout():
+                    timed_out["flag"] = True
+                    try:
+                        agent.interrupt("agent timeout (spec §8)")
+                    except Exception:  # noqa: BLE001
+                        # Interrupt is best-effort; the error frame below is
+                        # the authoritative signal. Don't mask it with a
+                        # raise from a sibling cleanup path.
+                        pass
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put((
+                            "error",
+                            f"agent exceeded {_AGENT_TIMEOUT_S}s wall clock (spec §8)",
+                        )),
+                        loop,
+                    )
+
+                timer = threading.Timer(_AGENT_TIMEOUT_S, on_timeout)
+                timer.daemon = True
+                timer.start()
+                try:
+                    agent.run_conversation(prompt)
+                finally:
+                    timer.cancel()
+                if timed_out["flag"]:
+                    # Error frame already enqueued by on_timeout; it is the
+                    # terminal event. Do NOT also enqueue "done" — the
+                    # stream's error branch returns before done is observed.
+                    return
             asyncio.run_coroutine_threadsafe(queue.put(("done", None)), loop)
         except Exception as e:  # noqa: BLE001
             asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop)
@@ -241,9 +301,39 @@ def build_explain_app() -> FastAPI:
 
     @app.post("/api/explain")
     async def explain(request: Request):
-        # Auth: dashboard session cookie. Mirrors kanban plugin routes.
-        cookie = request.headers.get("cookie", "")
-        if "hermes_session_at=" not in cookie:
+        # Auth: dashboard session cookie. This check is DEFENSE-IN-DEPTH, not
+        # the primary auth gate. In production this route is mounted directly
+        # into the main dashboard app (web_server.py ~L18733), where
+        # ``gated_auth_middleware`` runs FIRST and fully verifies the session
+        # cookie (HMAC/JWKS via the registered DashboardAuthProvider) before
+        # any route handler is reached. The check below only matters in
+        # loopback / ``--insecure`` mode, where the OAuth gate is a no-op —
+        # and in that mode the dashboard is bound to loopback anyway, so the
+        # threat model is "another local process," not the network.
+        #
+        # We additionally trust the cookie's PRESENCE here because the
+        # fastify ops-console relay — the only documented caller —
+        # independently authenticates the user and re-logs in to hermes to
+        # mint this cookie, so by the time a request reaches /api/explain
+        # the cookie has already been verified upstream. Re-verifying the
+        # signature here would duplicate that work and couple this endpoint
+        # to the dashboard auth provider registry, which is tightly bound to
+        # the app lifecycle (providers are registered at startup, not import
+        # time) and not safely importable as a standalone FastAPI dependency.
+        #
+        # The check uses SimpleCookie (exact-name parse) rather than a
+        # substring test so a decoy cookie named ``xhermes_session_at=`` can't
+        # satisfy it. Both ``__Host-``/``__Secure-`` prefixed and bare names
+        # are accepted to match what the setter writes under each deploy
+        # shape (see dashboard_auth.cookies._resolved_name).
+        cookie_header = request.headers.get("cookie", "")
+        parsed = SimpleCookie()
+        parsed.load(cookie_header)
+        has_session = any(
+            f"{variant}hermes_session_at" in parsed
+            for variant in ("__Host-", "__Secure-", "")
+        )
+        if not has_session:
             raise HTTPException(status_code=401, detail="not authenticated")
         body = await request.json()
         req = ExplainRequest(**body)

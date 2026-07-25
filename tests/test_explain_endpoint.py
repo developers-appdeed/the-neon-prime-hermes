@@ -126,3 +126,95 @@ def test_load_skill_body_returns_marker_protocol():
     assert "<<layer:architecture>>" in body
     assert "<<layer:database>>" in body
     assert "<<layer:micro>>" in body
+
+
+def test_explain_enforces_agent_timeout(app_with_mocked_agent, monkeypatch):
+    """Spec §8: an agent run exceeding the wall-clock timeout must emit an
+    ``event: error`` frame and close the stream cleanly (no ``event: done``).
+
+    Replaces AIAgent.run_conversation with a sleep that outlasts the
+    (overridden, short) timeout and asserts the SSE stream surfaces the
+    error frame. The agent's ``interrupt`` method is invoked by the timer;
+    we stub it so the test does not depend on the real AIAgent internals.
+    """
+    import hermes_explain
+
+    app, deltas = app_with_mocked_agent
+
+    # Shrink the timeout so the test runs in ~1s, not 90s.
+    monkeypatch.setattr(hermes_explain, "_AGENT_TIMEOUT_S", 0.2)
+    # Use the real-agent branch (not _DELTAS) so the timer is armed.
+    deltas["value"] = None
+
+    interrupt_calls: list[str] = []
+
+    class _SlowAgent:
+        """Stand-in that sleeps past the timeout. The timer fires, calls
+        interrupt() (recorded), and enqueues the error frame. The real
+        run_conversation would return after interrupt breaks its loop; here
+        we sleep to simulate a stuck call landing after the interrupt."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def interrupt(self, message=None):
+            interrupt_calls.append(message or "")
+
+        def run_conversation(self, prompt):
+            import time
+            time.sleep(1.0)
+            return {}
+
+    monkeypatch.setattr(hermes_explain, "AIAgent", _SlowAgent)
+
+    monkeypatch.setattr(hermes_explain, "AIAgent", _SlowAgent)
+    # Force the real-agent branch in run_agent() (not the _DELTAS replay).
+    monkeypatch.setattr(hermes_explain, "_DELTAS", None)
+
+    client = TestClient(app)
+    with client.stream("POST", "/api/explain",
+                       json={"question": "q", "repo": "r"},
+                       headers={"Cookie": "hermes_session_at=x"}) as resp:
+        assert resp.status_code == 200
+        raw = "\n".join(resp.iter_lines())
+
+    frames = _parse_sse(raw)
+    events = [e for e, _ in frames]
+    assert "error" in events, f"expected error frame, got events={events}"
+    # No done frame — the timeout path returns before enqueuing the sentinel.
+    assert "done" not in events, f"unexpected done frame after timeout: {events}"
+    # The timer invoked interrupt() on the agent.
+    assert interrupt_calls, "timer did not call agent.interrupt()"
+
+
+def test_explain_cookie_check_rejects_decoy_substring(app_with_mocked_agent):
+    """Issue 3: a cookie named ``xhermes_session_at=fake`` must NOT satisfy
+    the auth check — the parser must match ``hermes_session_at`` by exact
+    name, not substring. Also verifies the __Host-/__Secure- prefixed names
+    ARE accepted (the setter writes those under HTTPS)."""
+    app, _ = app_with_mocked_agent
+    client = TestClient(app)
+
+    # Decoy-only cookie → rejected.
+    resp = client.post("/api/explain",
+                       json={"question": "q", "repo": "r"},
+                       headers={"Cookie": "xhermes_session_at=fake"})
+    assert resp.status_code == 401
+
+    # Bare name still accepted (loopback / HTTP deploy shape).
+    resp = client.post("/api/explain",
+                       json={"question": "q", "repo": "r"},
+                       headers={"Cookie": "hermes_session_at=real"})
+    assert resp.status_code == 200
+
+    # __Host- prefixed name accepted (HTTPS direct-deploy shape).
+    resp = client.post("/api/explain",
+                       json={"question": "q", "repo": "r"},
+                       headers={"Cookie": "__Host-hermes_session_at=real"})
+    assert resp.status_code == 200
+
+    # __Secure- prefixed name accepted (HTTPS reverse-proxy shape).
+    resp = client.post("/api/explain",
+                       json={"question": "q", "repo": "r"},
+                       headers={"Cookie": "__Secure-hermes_session_at=real"})
+    assert resp.status_code == 200
