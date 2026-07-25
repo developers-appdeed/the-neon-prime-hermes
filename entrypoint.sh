@@ -108,6 +108,47 @@ if [ -d "/opt/skills" ]; then
   echo "[entrypoint] dev-loop skills copied"
 fi
 
+# ─── 4b. /api/explain endpoint (code-explainer feature) ──────────────────────
+# Copy hermes_explain.py into the installed hermes_cli package so the
+# `from hermes_cli.hermes_explain import build_explain_app` in web_server.py
+# resolves, then idempotently inject the mount call into web_server.py.
+# See patches/web_server-explain-mount.patch for the human-readable record.
+if [ -f /opt/hermes_explain.py ]; then
+  HERMES_PKG_DIR=$(python3 -c "import hermes_cli, os; print(os.path.dirname(hermes_cli.__file__))" 2>/dev/null || echo "")
+  if [ -n "$HERMES_PKG_DIR" ] && [ -d "$HERMES_PKG_DIR" ]; then
+    cp /opt/hermes_explain.py "$HERMES_PKG_DIR/hermes_explain.py" 2>/dev/null || true
+    WS="$HERMES_PKG_DIR/web_server.py"
+    if ! grep -q "hermes_explain" "$WS" 2>/dev/null; then
+      python3 -c "
+mount_block = '''
+# ─── /api/explain — streaming code explanation (brain explain feature) ────────
+try:
+    from hermes_cli.hermes_explain import build_explain_app as _build_explain_app
+    for _r in _build_explain_app().routes:
+        app.routes.append(_r)
+    _log.info(\"Mounted /api/explain (code-explainer)\")
+except Exception as _exc:  # noqa: BLE001
+    _log.warning(\"Failed to mount /api/explain: %s\", _exc)
+
+'''
+with open('$WS') as f:
+    src = f.read()
+# Insert immediately before the module-scope mount_spa(app) call. That call
+# installs a /{full_path:path} catch-all that would swallow /api/explain if
+# the mount came after it. Only patch the first occurrence (count=1).
+marker = 'mount_spa(app)'
+if marker in src and 'hermes_explain' not in src:
+    src = src.replace(marker, mount_block + marker, 1)
+    with open('$WS', 'w') as f:
+        f.write(src)
+    print('[entrypoint] /api/explain mount injected before mount_spa(app)')
+else:
+    print('[entrypoint] /api/explain mount skipped (marker not found or already present)')
+" 2>&1 || true
+    fi
+  fi
+fi
+
 # ─── 5. Initialize hermes state if fresh ──────────────────────────────────────
 if [ ! -f "/root/.hermes/state.db" ]; then
   echo "[entrypoint] initializing hermes state..."

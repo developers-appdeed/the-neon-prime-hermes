@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir graphifyy "hermes-agent[all]"
 ENV ZCODE_DATA_BASE_DIR=/data/zcode
 
 COPY skills/ /opt/skills/
+COPY hermes_explain.py /opt/hermes_explain.py
 COPY entrypoint.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh
 

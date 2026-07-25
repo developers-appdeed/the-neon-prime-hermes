@@ -1,0 +1,78 @@
+# web_server.py — mount /api/explain (brain explain feature)
+
+This patch records the manual edit applied to
+`hermes_cli/web_server.py` (in the installed `hermes-agent` pip package)
+to mount the `/api/explain` streaming endpoint.
+
+## Why a patch file (not a git-tracked source edit)
+
+`web_server.py` lives in the `hermes-agent` pip package, not in this
+repo. The repo only carries deployment glue (`entrypoint.sh`,
+`Dockerfile`, `skills/`, `hermes_explain.py`). The change is applied
+in-place at the installed package location and re-applied idempotently
+by `entrypoint.sh` on every container start (so a `hermes-agent` version
+bump doesn't silently drop the endpoint). This file is the human-readable
+record of intent; `entrypoint.sh` is the source of truth at runtime.
+
+## Divergence from the original plan
+
+The original plan assumed `start_server()` built and `return app`'d an
+app instance, and inserted the mount before that `return app`. The real
+`web_server.py` structure is different:
+
+- `app` is a **module-level global** (`app = FastAPI(...)` near the top).
+- Routes are mounted at **module import time** (no `build_app`/`return app`).
+- `_mount_plugin_api_routes()` and `app.include_router(_dashboard_auth_router)`
+  run at import scope, followed by `mount_spa(app)`.
+
+There is no `return app` to insert before. The mount is inserted at module
+scope, between the dashboard-auth router and `mount_spa(app)`. This
+location is **load-bearing**: `mount_spa(app)` installs a
+`/{full_path:path}` catch-all that would swallow `/api/explain` if the
+mount came after it.
+
+## The edit (unified-diff shape; re-derive line numbers against the live file)
+
+The block is inserted immediately after:
+
+    from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+    app.include_router(_dashboard_auth_router)
+
+and immediately before:
+
+    mount_spa(app)
+
+--- a/hermes_cli/web_server.py
++++ b/hermes_cli/web_server.py
+@@ -18724,6 +18724,18 @@
+ from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+ app.include_router(_dashboard_auth_router)
+
++# ─── /api/explain — streaming code explanation (brain explain feature) ────────
++# Mounted before mount_spa() because the SPA installs a /{full_path:path}
++# catch-all that would otherwise swallow /api/explain. Routes are appended
++# directly (not mounted as a sub-app at /api) to avoid shadowing the existing
++# /api/plugins/* and /api/auth/* routes. See hermes_explain.build_explain_app.
++try:
++    from hermes_cli.hermes_explain import build_explain_app as _build_explain_app
++    for _r in _build_explain_app().routes:
++        app.routes.append(_r)
++    _log.info("Mounted /api/explain (code-explainer)")
++except Exception as _exc:  # noqa: BLE001
++    _log.warning("Failed to mount /api/explain: %s", _exc)
++
+ mount_spa(app)
+
+## Notes
+
+- The import is package-qualified (`from hermes_cli.hermes_explain import ...`)
+  because `hermes_cli/` is not on `sys.path` at runtime — only the
+  `hermes_cli` package itself is importable. `entrypoint.sh` copies
+  `hermes_explain.py` into the installed `hermes_cli/` package dir so this
+  import resolves.
+- Route-append (`app.routes.append(r)`) is used instead of
+  `app.mount("/api", sub_app)` to avoid shadowing `/api/plugins/*` and
+  `/api/auth/*`.
+- The whole block is wrapped in `try/except` so a failure to build the
+  explain app (e.g. missing `run_agent` import) doesn't take down the
+  entire dashboard — it logs a warning and continues.
