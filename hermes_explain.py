@@ -21,7 +21,52 @@ from pydantic import BaseModel, Field
 from run_agent import AIAgent  # noqa: E402
 
 _LAYER_RE = re.compile(r"<<layer:(business_logic|architecture|database|micro)>>")
-SKILL_PATH = Path(__file__).resolve().parent / "skills" / "code-explainer" / "SKILL.md"
+
+# Repo-relative skill path. Works in the git checkout (where this file sits at
+# the repo root next to skills/). In production the entrypoint copies this
+# module into the installed hermes_cli/ package dir, where this path no longer
+# resolves — see _resolve_skill_path() for the production fallback.
+_REPO_SKILL_PATH = Path(__file__).resolve().parent / "skills" / "code-explainer" / "SKILL.md"
+
+
+def _resolve_skill_path() -> Path:
+    """Resolve the code-explainer SKILL.md location, handling both the
+    production install layout and the in-repo test layout.
+
+    Production layout: the entrypoint (entrypoint.sh ~line 102) copies the
+    bundled skills tree into the hermes skills hub at
+    ``<skills_dir>/software-development/code-explainer/SKILL.md``, where
+    ``<skills_dir>`` is ``~/.hermes/skills`` (or ``$HERMES_HOME/skills`` under
+    a non-default profile). This module itself is copied into the installed
+    ``hermes_cli/`` package dir, so ``Path(__file__).parent`` is NOT the repo
+    root in production and the historical repo-relative path
+    (``_REPO_SKILL_PATH``) does not exist there.
+
+    Approach: prefer the hermes skills hub (resolved via the same
+    ``hermes_constants.get_skills_dir()`` the rest of hermes uses, so profile
+    switches and HERMES_HOME overrides just work); fall back to the
+    repo-relative path so this module keeps working from a source checkout
+    (and so the test suite, which has no installed copy of the skill, can
+    still load it). Raise FileNotFoundError with both candidates if neither
+    exists — a silent wrong path is exactly the production bug we're fixing.
+    """
+    candidates: list[Path] = []
+    try:
+        from hermes_constants import get_skills_dir
+        candidates.append(get_skills_dir() / "software-development" / "code-explainer" / "SKILL.md")
+    except Exception:
+        # hermes_constants unavailable (e.g. running outside the venv) — skip
+        # the hub path and rely on the repo-relative fallback below.
+        pass
+    candidates.append(_REPO_SKILL_PATH)
+    for p in candidates:
+        if p.is_file():
+            return p
+    raise FileNotFoundError(
+        "code-explainer SKILL.md not found. Tried: "
+        + ", ".join(str(c) for c in candidates)
+    )
+
 
 # Set by tests to script agent deltas. Production code leaves this None.
 _DELTAS: Optional[list[str]] = None
@@ -39,7 +84,7 @@ class ExplainRequest(BaseModel):
 
 def _load_skill_body() -> str:
     """Read the code-explainer SKILL.md body (after the frontmatter)."""
-    raw = SKILL_PATH.read_text()
+    raw = _resolve_skill_path().read_text()
     # Split off YAML frontmatter if present.
     if raw.startswith("---"):
         parts = raw.split("---", 2)
@@ -64,6 +109,15 @@ def _build_agent(question: str, repo: str, enqueue):
 
     runtime = resolve_runtime_provider(requested=None, target_model=effective_model or None)
 
+    # Fallback chain + clarify shim — same two-line wiring oneshot uses
+    # (oneshot.py:401/414 and 426/439). The code-explainer skill never
+    # triggers a clarify in v1, but fallback_model is cheap insurance
+    # against a primary-model outage. NOTE: we do NOT replicate the
+    # HERMES_INFERENCE_MODEL env override or detect_provider_for_model
+    # auto-detection from oneshot.py:339/381 here — those are only
+    # meaningful when the caller is overriding the model, which the
+    # explain endpoint never does (it always uses the configured default).
+
     # Read-only MCP toolset per spec §5.2. Plan mode is enforced by the
     # allow-list + role discipline; hermes' AIAgent doesn't take a --mode flag
     # directly (that's a ZCode concept), so the skill text carries the rule.
@@ -85,6 +139,10 @@ def _build_agent(question: str, repo: str, enqueue):
         f"---\n\nExplain, in repo `{repo}`, the following:\n\n{question}\n"
     )
 
+    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.oneshot import _oneshot_clarify_callback
+    _fb = get_fallback_chain(cfg)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -96,6 +154,8 @@ def _build_agent(question: str, repo: str, enqueue):
         platform="cli",
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
+        clarify_callback=_oneshot_clarify_callback,
         stream_delta_callback=enqueue,
     )
     agent.suppress_status_output = True
@@ -108,7 +168,6 @@ async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
     layers_seen: list[str] = []
-    pending_marker: Optional[str] = None
 
     def emit_sse(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()

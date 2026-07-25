@@ -112,3 +112,17 @@ def test_explain_validates_body(app_with_mocked_agent):
                        json={"question": "q"},
                        headers={"Cookie": "hermes_session_at=x"})
     assert resp.status_code in (400, 422, 500)
+
+
+def test_load_skill_body_returns_marker_protocol():
+    """Regression guard for the production SKILL_PATH bug: _load_skill_body
+    must resolve the code-explainer SKILL.md from both the hermes skills hub
+    (production) and the repo-relative path (tests/dev), and must return the
+    layer-marker protocol the SSE parser strips out."""
+    import hermes_explain
+    body = hermes_explain._load_skill_body()
+    assert isinstance(body, str) and body
+    assert "<<layer:business_logic>>" in body
+    assert "<<layer:architecture>>" in body
+    assert "<<layer:database>>" in body
+    assert "<<layer:micro>>" in body
