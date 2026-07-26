@@ -218,3 +218,20 @@ def test_explain_cookie_check_rejects_decoy_substring(app_with_mocked_agent):
                        json={"question": "q", "repo": "r"},
                        headers={"Cookie": "__Secure-hermes_session_at=real"})
     assert resp.status_code == 200
+
+
+def test_refresh_repos_unknown_key_returns_404(app_with_mocked_agent):
+    app, _ = app_with_mocked_agent
+    client = TestClient(app)
+    resp = client.post("/api/repos/refresh",
+                       json={"repo": "nonexistent"},
+                       headers={"Cookie": "hermes_session_at=x"})
+    assert resp.status_code == 404
+    assert "nonexistent" in resp.json()["detail"]
+
+
+def test_refresh_repos_requires_auth(app_with_mocked_agent):
+    app, _ = app_with_mocked_agent
+    client = TestClient(app)
+    resp = client.post("/api/repos/refresh", json={"repo": "store"})
+    assert resp.status_code == 401

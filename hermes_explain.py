@@ -367,4 +367,63 @@ def build_explain_app() -> FastAPI:
             },
         )
 
+    # POST /api/repos/refresh — git fetch + reset a repo so /repos stays in sync
+    # with the brain's graph refresh cadence. Called by fastify's deploy-success
+    # webhook handler (alongside brain.refresh) so a push → Coolify deploy →
+    # brain graph update + hermes /repos update fire together. The repo key is
+    # the brain's key (store/api/admin/flutter); we map it to the /repos dir.
+    # Mirrors the entrypoint's clone_repo logic but on-demand for one repo.
+    REPO_KEY_TO_DIR = {
+        "store": "the-neon-prime",
+        "api": "the-neon-prime-fastify",
+        "admin": "the-neon-prime-admin",
+        "flutter": "the-neon-prime-ops",
+    }
+
+    @app.post("/api/repos/refresh")
+    async def refresh_repos(request: Request):
+        # Same dashboard-cookie auth as /api/explain.
+        cookie = request.headers.get("cookie", "")
+        if "hermes_session_at=" not in cookie:
+            raise HTTPException(status_code=401, detail="not authenticated")
+        body = await request.json()
+        repo_key = body.get("repo", "")
+        repo_dir = REPO_KEY_TO_DIR.get(repo_key)
+        if not repo_dir:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown repo key '{repo_key}'. known: {list(REPO_KEY_TO_DIR)}",
+            )
+        repo_path = f"/repos/{repo_dir}"
+        if not os.path.isdir(repo_path):
+            raise HTTPException(status_code=404, detail=f"{repo_path} not cloned")
+
+        import subprocess
+        before = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        try:
+            # fetch + reset to origin/dev (the branch the entrypoint checks out).
+            # Token is already embedded in the clone's remote URL (entrypoint
+            # cloned with x-access-token:<token>@github.com), so fetch needs no
+            # extra auth. --all in case other branches exist; reset pins to dev.
+            subprocess.run(["git", "-C", repo_path, "fetch", "--quiet", "--all"],
+                           capture_output=True, text=True, timeout=60)
+            subprocess.run(["git", "-C", repo_path, "reset", "--quiet", "--hard",
+                            "origin/dev"], capture_output=True, text=True, timeout=30)
+            subprocess.run(["git", "-C", repo_path, "checkout", "--quiet", "dev"],
+                           capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return {"repo": repo_key, "error": "git fetch timed out (>60s)"}
+        after = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        return {
+            "repo": repo_key, "dir": repo_dir,
+            "before": before, "after": after,
+            "updated": before != after,
+        }
+
     return app
