@@ -134,19 +134,16 @@ def _build_agent(question: str, repo: str, enqueue):
     # meaningful when the caller is overriding the model, which the
     # explain endpoint never does (it always uses the configured default).
 
-    # Read-only MCP toolset per spec §5.2. Plan mode is enforced by the
-    # allow-list + role discipline; hermes' AIAgent doesn't take a --mode flag
-    # directly (that's a ZCode concept), so the skill text carries the rule.
-    toolsets = [
-        "Read", "Grep",
-        "mcp__brain__query_graph", "mcp__brain__explain", "mcp__brain__get_node",
-        "mcp__brain__get_neighbors", "mcp__brain__get_community",
-        "mcp__brain__god_nodes", "mcp__brain__shortest_path",
-        "mcp__postgres-tnp-dev__execute_sql", "mcp__postgres-tnp-prod__execute_sql",
-        "mcp__redis-tnp-dev__get", "mcp__redis-tnp-dev__hgetall",
-        "mcp__redis-tnp-prod__get", "mcp__redis-tnp-prod__hgetall",
-        "mcp__grafana__query_loki_logs", "mcp__grafana__query_prometheus",
-    ]
+    # Resolve toolsets the SAME way oneshot does (hermes_cli/oneshot.py:396):
+    # _get_platform_tools(cfg, "cli") returns the configured toolset NAMES
+    # (e.g. "brain", "file", "postgres-tnp-dev" — one toolset per registered
+    # MCP server + the built-ins like file/terminal/skills). Passing individual
+    # tool NAMES (mcp__brain__query_graph) does NOT work — those are tools
+    # within toolsets, not toolsets themselves, and resolve to zero tools.
+    # The read-only posture is enforced by the skill text (which forbids
+    # writes) + the fact that no deploy/merge/push toolsets are registered.
+    from hermes_cli.tools_config import _get_platform_tools
+    toolsets = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = None  # ephemeral; no persistence
     skill_body = _load_skill_body()
@@ -193,13 +190,6 @@ def _build_agent(question: str, repo: str, enqueue):
     )
     agent.suppress_status_output = True
     agent.tool_gen_callback = None
-    # DIAGNOSTIC (temporary): log tool availability so we can see whether the
-    # agent actually has the MCP tools or is forced to describe them as text.
-    import sys as _sys
-    _tools = getattr(agent, "tools", None) or []
-    _names = [t.get("name", "?") for t in _tools if isinstance(t, dict)]
-    _brain = [n for n in _names if "brain" in n.lower()]
-    print(f"[explain-diag] agent.tools count={len(_tools)} brain_tools={_brain} sample={_names[:6]}", file=_sys.stderr, flush=True)
     return agent, system_message, user_message
 
 
