@@ -81,7 +81,41 @@ try:
 except:
     pass
 
-# ─── MCP servers for the code-explainer agent (spec §5.2) ────────────────────
+with open('$HERMES_CFG', 'w') as f:
+    yaml.dump(config, f)
+print('[entrypoint] hermes config.yaml ensured (model + dashboard auth)')
+"
+fi
+
+# ─── 2b. MCP servers for the code-explainer agent (spec §5.2) ────────────────
+# ALWAYS RUNS (not gated on first-time config creation). The config.yaml
+# persists across deploys via the ./data/hermes volume, so the model/dashboard
+# block above only fires once — but MCP wiring must reconcile on every start
+# so adding/removing env vars (e.g. GRAFANA_SERVICE_ACCOUNT_TOKEN) takes effect
+# without wiping the volume. Existing manually-added servers are preserved.
+python3 -c "
+import yaml, os
+HERMES_CFG = '/root/.hermes/config.yaml'
+# Load existing (or start fresh if somehow missing)
+try:
+    with open(HERMES_CFG) as f:
+        config = yaml.safe_load(f) or {}
+except Exception:
+    config = {}
+
+# All services are on the \`coolify\` docker network, which this container
+# joins (see docker-compose.yml). Hostnames come from ds6c/services.env.
+# We use \${ENV_VAR} interpolation — hermes resolves these from .env / env at
+# config load time (tools/mcp_tool.py:_interpolate_env_vars). Secrets never
+# land in the repo; they're injected via Coolify env.
+#
+# Read-only posture: the code-explainer's allow-list in hermes_explain.py
+# only grants the *read* tool names (postgres execute_sql, redis get/hgetall,
+# grafana query_*). The MCPs themselves are unrestricted at the DB layer
+# (crystaldba/postgres-mcp --access-mode=unrestricted), so the allow-list is
+# the enforcement boundary, not the MCP. This mirrors how the dev-loop-tester
+# skill works (SKILL.md:57-58).
+mcp = {}
 # All services are on the `coolify` docker network, which this container
 # joins (see docker-compose.yml). Hostnames come from ds6c/services.env.
 # We use ${ENV_VAR} interpolation — hermes resolves these from .env / env at
@@ -170,12 +204,11 @@ if mcp:
         existing_mcp.setdefault(name, cfg)
     config['mcp_servers'] = existing_mcp
 
-with open('$HERMES_CFG', 'w') as f:
+with open(HERMES_CFG, 'w') as f:
     yaml.dump(config, f)
 registered = list((config.get('mcp_servers') or {}).keys())
-print(f'[entrypoint] hermes config.yaml written; mcp_servers: {registered}')
+print(f'[entrypoint] hermes config.yaml reconciled; mcp_servers: {registered}')
 "
-fi
 
 # ─── 3. Hermes API keys in .env ───────────────────────────────────────────────
 # Hermes routes glm-* models through its native Z.AI provider, which needs
