@@ -193,6 +193,13 @@ def _build_agent(question: str, repo: str, enqueue):
     )
     agent.suppress_status_output = True
     agent.tool_gen_callback = None
+    # DIAGNOSTIC (temporary): log tool availability so we can see whether the
+    # agent actually has the MCP tools or is forced to describe them as text.
+    import sys as _sys
+    _tools = getattr(agent, "tools", None) or []
+    _names = [t.get("name", "?") for t in _tools if isinstance(t, dict)]
+    _brain = [n for n in _names if "brain" in n.lower()]
+    print(f"[explain-diag] agent.tools count={len(_tools)} brain_tools={_brain} sample={_names[:6]}", file=_sys.stderr, flush=True)
     return agent, system_message, user_message
 
 
