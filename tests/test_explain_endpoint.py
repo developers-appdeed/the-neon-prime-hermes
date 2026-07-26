@@ -103,15 +103,23 @@ def test_explain_requires_auth(app_with_mocked_agent):
 def test_explain_validates_body(app_with_mocked_agent):
     app, _ = app_with_mocked_agent
     client = TestClient(app, raise_server_exceptions=False)
-    # Missing repo. The handler validates the body by constructing
-    # ExplainRequest(**body) directly (not via FastAPI dependency
-    # injection), so Pydantic raises ValidationError in-handler → Starlette
-    # converts to 500, not 422. The contract is "request rejected," which
-    # any 4xx/5xx satisfies; the exact code is an implementation detail.
+    # Empty question → rejected (min_length=1).
     resp = client.post("/api/explain",
-                       json={"question": "q"},
+                       json={"question": ""},
                        headers={"Cookie": "hermes_session_at=x"})
     assert resp.status_code in (400, 422, 500)
+
+
+def test_explain_accepts_no_repo(app_with_mocked_agent):
+    """Repo is now OPTIONAL — the agent fans out across all repos when
+    no repo is specified. A request with just a question (no repo key)
+    must be accepted."""
+    app, _ = app_with_mocked_agent
+    client = TestClient(app)
+    resp = client.post("/api/explain",
+                       json={"question": "how does the cart work?"},
+                       headers={"Cookie": "hermes_session_at=x"})
+    assert resp.status_code == 200
 
 
 def test_load_skill_body_returns_marker_protocol():

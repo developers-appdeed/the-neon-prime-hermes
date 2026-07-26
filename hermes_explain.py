@@ -98,7 +98,7 @@ def _set_deltas(value):  # tests monkeypatch this
 
 class ExplainRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=500)
-    repo: str = Field(..., min_length=1)
+    repo: Optional[str] = Field(None, description="Brain repo key (store/api/admin/flutter). Omit to search all repos (fan-out).")
 
 
 def _load_skill_body() -> str:
@@ -163,10 +163,25 @@ def _build_agent(question: str, repo: str, enqueue):
         f"order as you write each section. Never describe your plan; only "
         f"emit layer markers and the explanation prose."
     )
+    if repo:
+        scope = f"the repo `{repo}`"
+        scope_hint = ""
+    else:
+        scope = "the whole system (all repos)"
+        scope_hint = (
+            "\nThe brain will fan out across all repos. Identify WHICH repo "
+            "each finding comes from (the brain tags output with [repo:...]) "
+            "and read source from /repos/<dir> for each repo mentioned. "
+            "The repo keys are: store→/repos/the-neon-prime, "
+            "api→/repos/the-neon-prime-fastify, "
+            "admin→/repos/the-neon-prime-admin, "
+            "flutter→/repos/the-neon-prime-ops."
+        )
     user_message = (
-        f"Explain, in repo `{repo}`, the following. Begin NOW with a "
-        f"query_graph tool call, then emit `<<layer:business_logic>>` and "
-        f"write the section.\n\nQuestion: {question}\n"
+        f"Explain, across {scope}, the following. Begin NOW with a "
+        f"query_graph tool call (omit the repo arg to search all repos), "
+        f"then emit `<<layer:business_logic>>` and write the section."
+        f"{scope_hint}\n\nQuestion: {question}\n"
     )
 
     from hermes_cli.fallback_config import get_fallback_chain
