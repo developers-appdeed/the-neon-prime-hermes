@@ -239,9 +239,17 @@ print(f'[entrypoint] hermes config.yaml reconciled; mcp_servers: {registered}')
 # graph refresh cadence (both fire on deploy), so citations don't drift.
 # Clones persist in the ./data/repos volume across restarts; the fetch is
 # fast (incremental) after the first clone.
+# Repos are PRIVATE — GITHUB_TOKEN (PAT with contents:read on the 4 repos,
+# from ds6c host /root/.git-credentials) is injected via Coolify env and
+# embedded in the clone URL. Without it, git returns 401.
 mkdir -p /repos
 clone_repo() {
-  local url="$1" dir="$2" branch="${3:-dev}"
+  local dir="$1" branch="${2:-dev}"
+  local base="https://github.com/developers-appdeed/${dir}.git"
+  local authed="$base"
+  if [ -n "$GITHUB_TOKEN" ]; then
+    authed="https://x-access-token:${GITHUB_TOKEN}@github.com/developers-appdeed/${dir}.git"
+  fi
   if [ -d "/repos/$dir/.git" ]; then
     echo "[entrypoint] refreshing $dir ($branch)"
     git -C "/repos/$dir" fetch --quiet --all 2>/dev/null || true
@@ -249,15 +257,15 @@ clone_repo() {
     git -C "/repos/$dir" reset --quiet --hard "origin/$branch" 2>/dev/null || true
   else
     echo "[entrypoint] cloning $dir ($branch)"
-    git clone --quiet --branch "$branch" "$url" "/repos/$dir" 2>/dev/null \
-      || git clone --quiet "$url" "/repos/$dir" 2>/dev/null \
-      || echo "[entrypoint] WARNING: failed to clone $dir"
+    git clone --quiet --branch "$branch" "$authed" "/repos/$dir" 2>/dev/null \
+      || git clone --quiet "$authed" "/repos/$dir" 2>/dev/null \
+      || echo "[entrypoint] WARNING: failed to clone $dir (token set? ${GITHUB_TOKEN:+yes}${GITHUB_TOKEN:-no})"
   fi
 }
-clone_repo "https://github.com/developers-appdeed/the-neon-prime.git"       "the-neon-prime"         "dev"
-clone_repo "https://github.com/developers-appdeed/the-neon-prime-fastify.git" "the-neon-prime-fastify" "dev"
-clone_repo "https://github.com/developers-appdeed/the-neon-prime-admin.git"  "the-neon-prime-admin"   "dev"
-clone_repo "https://github.com/developers-appdeed/the-neon-prime-ops.git"    "the-neon-prime-ops"     "dev"
+clone_repo "the-neon-prime"         "dev"
+clone_repo "the-neon-prime-fastify" "dev"
+clone_repo "the-neon-prime-admin"   "dev"
+clone_repo "the-neon-prime-ops"     "dev"
 echo "[entrypoint] /repos ready"
 
 # ─── 3. Hermes API keys in .env ───────────────────────────────────────────────

@@ -35,6 +35,9 @@ services:
       # too (mcp__grafana__query_prometheus).
       GRAFANA_URL: "${GRAFANA_URL:-http://ds6c-grafana:3000}"
       GRAFANA_SERVICE_ACCOUNT_TOKEN: "${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}"
+      # GitHub PAT (contents:read on the 4 tnp repos) — used by the entrypoint
+      # to clone the private repos into /repos for the code-explainer agent to Read.
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     volumes:
       - ./data/hermes:/root/.hermes
       - ./data/zcode:/root/.zcode
