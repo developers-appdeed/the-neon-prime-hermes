@@ -150,9 +150,23 @@ def _build_agent(question: str, repo: str, enqueue):
 
     session_db = None  # ephemeral; no persistence
     skill_body = _load_skill_body()
-    prompt = (
+    # The skill rubric is the SYSTEM prompt (role + rules + layer protocol).
+    # The user message is a sharp directive — without this split, the model
+    # narrates intent ("I'll start by querying...") instead of emitting
+    # tool_use blocks, because the skill text competes with AIAgent's default
+    # conversational system prompt. System_message overrides that default.
+    system_message = (
         f"{skill_body}\n\n"
-        f"---\n\nExplain, in repo `{repo}`, the following:\n\n{question}\n"
+        f"You are executing an explain request RIGHT NOW. Do not narrate what "
+        f"you will do — DO IT. Your first action must be a tool call "
+        f"(mcp__brain__query_graph), not text. Emit the layer markers in "
+        f"order as you write each section. Never describe your plan; only "
+        f"emit layer markers and the explanation prose."
+    )
+    user_message = (
+        f"Explain, in repo `{repo}`, the following. Begin NOW with a "
+        f"query_graph tool call, then emit `<<layer:business_logic>>` and "
+        f"write the section.\n\nQuestion: {question}\n"
     )
 
     from hermes_cli.fallback_config import get_fallback_chain
@@ -179,7 +193,7 @@ def _build_agent(question: str, repo: str, enqueue):
     )
     agent.suppress_status_output = True
     agent.tool_gen_callback = None
-    return agent, prompt
+    return agent, system_message, user_message
 
 
 async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
@@ -203,7 +217,7 @@ async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
                 for d in _DELTAS:
                     enqueue(d)
             else:
-                agent, prompt = _build_agent(req.question, req.repo, enqueue)
+                agent, system_message, user_message = _build_agent(req.question, req.repo, enqueue)
                 # Spec §8: bound the agent run at the wall clock. AIAgent's
                 # run_conversation is blocking and has no timeout argument,
                 # so we arm a daemon Timer that fires agent.interrupt() —
@@ -238,7 +252,7 @@ async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
                 timer.daemon = True
                 timer.start()
                 try:
-                    agent.run_conversation(prompt)
+                    agent.run_conversation(user_message, system_message=system_message)
                 finally:
                     timer.cancel()
                 if timed_out["flag"]:

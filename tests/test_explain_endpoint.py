@@ -28,7 +28,7 @@ def app_with_mocked_agent(monkeypatch):
             self.suppress_status_output = True
             self.stream_delta_callback = stream_delta_callback
 
-        def run_conversation(self, prompt: str):
+        def run_conversation(self, user_message, system_message=None):
             deltas = deltas_holder["value"] or []
             for d in deltas:
                 if self._cb:
@@ -160,7 +160,7 @@ def test_explain_enforces_agent_timeout(app_with_mocked_agent, monkeypatch):
         def interrupt(self, message=None):
             interrupt_calls.append(message or "")
 
-        def run_conversation(self, prompt):
+        def run_conversation(self, user_message, system_message=None):
             import time
             time.sleep(1.0)
             return {}
