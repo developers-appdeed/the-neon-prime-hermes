@@ -202,9 +202,14 @@ async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
     def emit_sse(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
-    def enqueue(delta: str):
-        # Called from the agent thread. Push raw delta to the queue; the
-        # async loop parses it below.
+    def enqueue(delta):
+        # Called from the agent thread (stream_delta_callback). The conversation
+        # loop calls this with: text deltas (str), None (segment boundary), and
+        # occasionally structured objects on some providers. Only forward str
+        # deltas — None/non-str are control signals, not prose, and would crash
+        # the marker parser below if queued.
+        if not isinstance(delta, str):
+            return
         asyncio.run_coroutine_threadsafe(queue.put(("delta", delta)), loop)
 
     def run_agent():
@@ -285,7 +290,9 @@ async def _explain_stream(req: ExplainRequest) -> AsyncGenerator[bytes, None]:
                 yield emit_sse("done", {"layers": layers_seen})
                 return
             # kind == "delta" — parse layer markers out of the chunk.
-            assert isinstance(payload, str)
+            # enqueue() already filters non-str, but defend in depth.
+            if not isinstance(payload, str):
+                continue
             text = payload
             while True:
                 m = _LAYER_RE.search(text)
