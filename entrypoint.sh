@@ -229,6 +229,37 @@ registered = list((config.get('mcp_servers') or {}).keys())
 print(f'[entrypoint] hermes config.yaml reconciled; mcp_servers: {registered}')
 "
 
+# ─── 2c. Clone/refresh indexed repos into /repos ─────────────────────────────
+# The code-explainer agent reads actual source via the Read tool to write
+# accurate explanations (the brain graph gives locations, not content).
+# The brain container has these cloned in its own volume; hermes has a
+# separate empty /repos, so we mirror brain's repo set here. List matches
+# the brain's /app/repos.json (store/api/admin/flutter keys → 4 github repos).
+# `git fetch + reset` on every start keeps source in sync with the brain's
+# graph refresh cadence (both fire on deploy), so citations don't drift.
+# Clones persist in the ./data/repos volume across restarts; the fetch is
+# fast (incremental) after the first clone.
+mkdir -p /repos
+clone_repo() {
+  local url="$1" dir="$2" branch="${3:-dev}"
+  if [ -d "/repos/$dir/.git" ]; then
+    echo "[entrypoint] refreshing $dir ($branch)"
+    git -C "/repos/$dir" fetch --quiet --all 2>/dev/null || true
+    git -C "/repos/$dir" checkout --quiet "$branch" 2>/dev/null || true
+    git -C "/repos/$dir" reset --quiet --hard "origin/$branch" 2>/dev/null || true
+  else
+    echo "[entrypoint] cloning $dir ($branch)"
+    git clone --quiet --branch "$branch" "$url" "/repos/$dir" 2>/dev/null \
+      || git clone --quiet "$url" "/repos/$dir" 2>/dev/null \
+      || echo "[entrypoint] WARNING: failed to clone $dir"
+  fi
+}
+clone_repo "https://github.com/developers-appdeed/the-neon-prime.git"       "the-neon-prime"         "dev"
+clone_repo "https://github.com/developers-appdeed/the-neon-prime-fastify.git" "the-neon-prime-fastify" "dev"
+clone_repo "https://github.com/developers-appdeed/the-neon-prime-admin.git"  "the-neon-prime-admin"   "dev"
+clone_repo "https://github.com/developers-appdeed/the-neon-prime-ops.git"    "the-neon-prime-ops"     "dev"
+echo "[entrypoint] /repos ready"
+
 # ─── 3. Hermes API keys in .env ───────────────────────────────────────────────
 # Hermes routes glm-* models through its native Z.AI provider, which needs
 # GLM_API_KEY (not ANTHROPIC_API_KEY). We set all the recognized env var names.
