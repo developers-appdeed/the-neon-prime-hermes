@@ -161,22 +161,41 @@ if os.environ.get('PROD_POSTGRES_DB_URL'):
         'env': {'DATABASE_URI': '${PROD_POSTGRES_DB_URL}'},
     }
 
-# Redis dev + prod — stdio uvx, URL built from the service env.
-# redis-mcp-server takes --url redis://default:PWD@HOST:6379/0.
+# Redis dev + prod — stdio uvx.
+# Package: redis-mcp (NOT redis-mcp-server — that one hard-pins numpy>=2.2.4,
+# whose wheels require the X86_V2 baseline the Coolify host CPU lacks).
+# redis-mcp is numpy-free, FastMCP-based. It reads REDIS_HOST/PORT/DB/PASSWORD/
+# USERNAME from env (no --url flag), so we parse the DEV/PROD_REDIS_URL
+# (redis://default:PWD@HOST:6379/0) here and pass the split fields in the
+# MCP env block. urllib handles the parsing.
+from urllib.parse import urlparse
+def _redis_env(url_var):
+    u = urlparse(os.environ.get(url_var, ''))
+    if not u.hostname:
+        return None
+    env = {'REDIS_HOST': u.hostname, 'REDIS_PORT': str(u.port or 6379),
+           'REDIS_DB': str((u.path or '/0')[1:] or '0')}
+    if u.password:
+        env['REDIS_PASSWORD'] = u.password
+    if u.username and u.username != 'default':
+        env['REDIS_USERNAME'] = u.username
+    return env
 if os.environ.get('DEV_REDIS_URL'):
-    mcp['redis-tnp-dev'] = {
-        'type': 'stdio',
-        'command': 'uvx',
-        'args': ['--from', 'redis-mcp-server@latest',
-                 'redis-mcp-server', '--url', '${DEV_REDIS_URL}'],
-    }
+    _re = _redis_env('DEV_REDIS_URL')
+    if _re:
+        mcp['redis-tnp-dev'] = {
+            'type': 'stdio', 'command': 'uvx',
+            'args': ['--from', 'redis-mcp', 'redis-mcp', '--transport', 'stdio'],
+            'env': _re,
+        }
 if os.environ.get('PROD_REDIS_URL'):
-    mcp['redis-tnp-prod'] = {
-        'type': 'stdio',
-        'command': 'uvx',
-        'args': ['--from', 'redis-mcp-server@latest',
-                 'redis-mcp-server', '--url', '${PROD_REDIS_URL}'],
-    }
+    _re = _redis_env('PROD_REDIS_URL')
+    if _re:
+        mcp['redis-tnp-prod'] = {
+            'type': 'stdio', 'command': 'uvx',
+            'args': ['--from', 'redis-mcp', 'redis-mcp', '--transport', 'stdio'],
+            'env': _re,
+        }
 
 # Grafana — CONDITIONAL. The grafana MCP needs a service-account token
 # (GRAFANA_SERVICE_ACCOUNT_TOKEN) that isn't in services.env by default —

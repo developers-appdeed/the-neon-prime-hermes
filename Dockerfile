@@ -24,7 +24,14 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
 # docker CLI (no daemon) — the postgres MCPs spawn sibling containers on the
 # coolify network via `docker run`. The daemon socket is mounted in
 # docker-compose.yml; the CLI just needs to talk to it.
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
+# NOTE: Debian's `docker.io` package ships only dockerd/docker-proxy, NOT the
+# `docker` CLI binary. Use Docker's official apt repo for docker-ce-cli.
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir graphifyy "hermes-agent[all]"
