@@ -15,6 +15,18 @@ RUN curl -fsSL -L -o /opt/zcode.cjs \
     && chmod +x /opt/zcode.cjs \
     && ln -s /opt/zcode.cjs /usr/local/bin/zcode
 
+# uv (for uvx) — needed by the redis + grafana stdio MCPs the code-explainer
+# agent spawns. Installed per the official standalone installer.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    ln -s /root/.local/bin/uv /usr/local/bin/uv && \
+    ln -s /root/.local/bin/uvx /usr/local/bin/uvx
+
+# docker CLI (no daemon) — the postgres MCPs spawn sibling containers on the
+# coolify network via `docker run`. The daemon socket is mounted in
+# docker-compose.yml; the CLI just needs to talk to it.
+RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir graphifyy "hermes-agent[all]"
 
 ENV ZCODE_DATA_BASE_DIR=/data/zcode

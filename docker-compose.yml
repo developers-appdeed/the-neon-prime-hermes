@@ -22,8 +22,26 @@ services:
       ZCODE_API_KEY: "${ZCODE_API_KEY}"
       BRAIN_URL: "${BRAIN_URL}"
       BRAIN_BEARER_TOKEN: "${BRAIN_BEARER_TOKEN}"
+      # ─── MCP connection details (code-explainer agent, spec §5.2) ──────────
+      # Values come from ds6c/services.env (Coolify env). Hostnames are the
+      # Coolify resource UUIDs — they resolve on the coolify docker network.
+      DEV_POSTGRES_DB_URL: "${DEV_POSTGRES_DB_URL:-}"
+      PROD_POSTGRES_DB_URL: "${PROD_POSTGRES_DB_URL:-}"
+      DEV_REDIS_URL: "${DEV_REDIS_URL:-}"
+      PROD_REDIS_URL: "${PROD_REDIS_URL:-}"
+      # Conditional — grafana MCP registers only if this is set. Create the
+      # token in Grafana UI (Service Accounts → Add token, scope metrics:query
+      # + logs:query) and add to Coolify env. Prometheus rides through here
+      # too (mcp__grafana__query_prometheus).
+      GRAFANA_URL: "${GRAFANA_URL:-http://ds6c-grafana:3000}"
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: "${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}"
     volumes:
       - ./data/hermes:/root/.hermes
       - ./data/zcode:/root/.zcode
       - ./data/repos:/repos
+      # Docker socket — the postgres MCPs spawn sibling containers on the
+      # coolify network (`docker run --network coolify`). Read/write on the
+      # host daemon; equivalent to root on the host, so this container must
+      # remain trusted. Same trade-off as any DinD MCP setup.
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped

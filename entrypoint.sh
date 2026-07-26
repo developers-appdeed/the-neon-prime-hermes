@@ -70,7 +70,8 @@ config = {
     }
 }
 
-# Merge with existing if present
+# Merge with existing if present (preserve any mcp_servers already present
+# so a manual `hermes mcp add` isn't clobbered on container restart).
 try:
     with open('$HERMES_CFG') as f:
         existing = yaml.safe_load(f)
@@ -80,9 +81,99 @@ try:
 except:
     pass
 
+# ─── MCP servers for the code-explainer agent (spec §5.2) ────────────────────
+# All services are on the `coolify` docker network, which this container
+# joins (see docker-compose.yml). Hostnames come from ds6c/services.env.
+# We use ${ENV_VAR} interpolation — hermes resolves these from .env / env at
+# config load time (tools/mcp_tool.py:_interpolate_env_vars). Secrets never
+# land in the repo; they're injected via Coolify env.
+#
+# Read-only posture: the code-explainer's allow-list in hermes_explain.py
+# only grants the *read* tool names (postgres execute_sql, redis get/hgetall,
+# grafana query_*). The MCPs themselves are unrestricted at the DB layer
+# (crystaldba/postgres-mcp --access-mode=unrestricted), so the allow-list is
+# the enforcement boundary, not the MCP. This mirrors how the dev-loop-tester
+# skill works (SKILL.md:57-58).
+mcp = {}
+
+# Brain — already wired in the ZCode config above, but the code-explainer
+# runs as a direct AIAgent (not through ZCode), so it needs the brain MCP
+# registered here too.
+if os.environ.get('BRAIN_URL') and os.environ.get('BRAIN_BEARER_TOKEN'):
+    mcp['brain'] = {
+        'type': 'http',
+        'url': os.environ['BRAIN_URL'].rstrip('/') + '/mcp',
+        'headers': {'Authorization': 'Bearer ${BRAIN_BEARER_TOKEN}'},
+    }
+
+# Postgres dev + prod — stdio docker containers, DATABASE_URI via env.
+# Hostnames are the Coolify resource UUIDs (resolve on the coolify net).
+if os.environ.get('DEV_POSTGRES_DB_URL'):
+    mcp['postgres-tnp-dev'] = {
+        'type': 'stdio',
+        'command': 'docker',
+        'args': ['run', '-i', '--rm', '--network', 'coolify',
+                 '-e', 'DATABASE_URI',
+                 'crystaldba/postgres-mcp', '--access-mode=unrestricted'],
+        'env': {'DATABASE_URI': '${DEV_POSTGRES_DB_URL}'},
+    }
+if os.environ.get('PROD_POSTGRES_DB_URL'):
+    mcp['postgres-tnp-prod'] = {
+        'type': 'stdio',
+        'command': 'docker',
+        'args': ['run', '-i', '--rm', '--network', 'coolify',
+                 '-e', 'DATABASE_URI',
+                 'crystaldba/postgres-mcp', '--access-mode=unrestricted'],
+        'env': {'DATABASE_URI': '${PROD_POSTGRES_DB_URL}'},
+    }
+
+# Redis dev + prod — stdio uvx, URL built from the service env.
+# redis-mcp-server takes --url redis://default:PWD@HOST:6379/0.
+if os.environ.get('DEV_REDIS_URL'):
+    mcp['redis-tnp-dev'] = {
+        'type': 'stdio',
+        'command': 'uvx',
+        'args': ['--from', 'redis-mcp-server@latest',
+                 'redis-mcp-server', '--url', '${DEV_REDIS_URL}'],
+    }
+if os.environ.get('PROD_REDIS_URL'):
+    mcp['redis-tnp-prod'] = {
+        'type': 'stdio',
+        'command': 'uvx',
+        'args': ['--from', 'redis-mcp-server@latest',
+                 'redis-mcp-server', '--url', '${PROD_REDIS_URL}'],
+    }
+
+# Grafana — CONDITIONAL. The grafana MCP needs a service-account token
+# (GRAFANA_SERVICE_ACCOUNT_TOKEN) that isn't in services.env by default —
+# admin user/pass won't work. Create one in Grafana UI
+# (Configuration → Service Accounts → Add token, scope metrics:query + logs:query),
+# add it to Coolify env for this app, redeploy. Until then the explainer's
+# grafana layer is skipped gracefully (skill degrades per SKILL.md refusal section).
+# Note: prometheus access also rides through here (mcp__grafana__query_prometheus),
+# per the design decision to not register a separate prometheus MCP.
+if os.environ.get('GRAFANA_SERVICE_ACCOUNT_TOKEN'):
+    mcp['grafana'] = {
+        'type': 'stdio',
+        'command': 'uvx',
+        'args': ['mcp-grafana'],
+        'env': {
+            'GRAFANA_URL': os.environ.get('GRAFANA_URL', 'http://ds6c-grafana:3000'),
+            'GRAFANA_SERVICE_ACCOUNT_TOKEN': '${GRAFANA_SERVICE_ACCOUNT_TOKEN}',
+        },
+    }
+
+if mcp:
+    # Merge: don't overwrite a manually-added server with the same name.
+    existing_mcp = config.get('mcp_servers', {}) or {}
+    for name, cfg in mcp.items():
+        existing_mcp.setdefault(name, cfg)
+    config['mcp_servers'] = existing_mcp
+
 with open('$HERMES_CFG', 'w') as f:
     yaml.dump(config, f)
-print('[entrypoint] hermes config.yaml created (model=glm-5.2 + dashboard auth)')
+registered = list((config.get('mcp_servers') or {}).keys())
+print(f'[entrypoint] hermes config.yaml written; mcp_servers: {registered}')
 "
 fi
 
