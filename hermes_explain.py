@@ -24,11 +24,13 @@ from run_agent import AIAgent  # noqa: E402
 
 _LAYER_RE = re.compile(r"<<layer:(business_logic|architecture|database|micro)>>")
 
-# Spec §8: "Agent exceeds 90s wall clock → enqueue event: error, close the
+# Spec §8 mandated 90s, but real-world measurement showed the code-explainer
+# needs ~3-4min to read code across repos + query DB schema + write 4 layers.
+# Bumped to 240s after the agent ran out of time mid-investigation at 90s.
 # stream cleanly." A stuck LLM call would otherwise hold the SSE connection
 # open indefinitely (the 20s heartbeat keeps the client quiet but does nothing
 # to bound the agent run itself). Tests override this to keep the suite fast.
-_AGENT_TIMEOUT_S = 90
+_AGENT_TIMEOUT_S = 240
 
 # Defense-in-depth turn cap. AIAgent defaults max_iterations=90, which a
 # tool-happy run could blow through well past the wall clock. 40 is generous
@@ -36,7 +38,7 @@ _AGENT_TIMEOUT_S = 90
 # tools) and bounds runaway spend alongside the wall clock. The wall clock
 # remains the authoritative bound; this just prevents a tight LLM-tool loop
 # from racing the timer.
-_AGENT_MAX_ITERATIONS = 40
+_AGENT_MAX_ITERATIONS = 60
 
 # Repo-relative skill path. Works in the git checkout (where this file sits at
 # the repo root next to skills/). In production the entrypoint copies this
